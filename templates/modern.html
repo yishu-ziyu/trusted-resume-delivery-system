@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ name }} - 简历</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Heiti SC', 'Songti SC', 'Hiragino Sans GB',
+                         'PingFang SC', Arial, sans-serif;
+            line-height: 1.7;
+            color: #1a1a2e;
+            padding: 50px 60px;
+            max-width: 210mm;
+            margin: 0 auto;
+            background: #fff;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            margin: -50px -60px 40px -60px;
+            border-radius: 0 0 20px 20px;
+        }
+        .name {
+            font-size: 36px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            margin-bottom: 15px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .contact {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            font-size: 14px;
+            opacity: 0.95;
+        }
+        .contact-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 18px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e8e8f0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 24px;
+            background: linear-gradient(180deg, #667eea, #764ba2);
+            border-radius: 2px;
+        }
+        .item {
+            margin-bottom: 20px;
+            padding-left: 15px;
+            border-left: 2px solid #e8e8f0;
+            transition: border-color 0.3s;
+        }
+        .item:hover {
+            border-left-color: #667eea;
+        }
+        .item-title {
+            font-weight: 600;
+            font-size: 16px;
+            color: #1a1a2e;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .item-subtitle {
+            color: #666;
+            font-size: 13px;
+            margin-bottom: 8px;
+            padding-left: 2px;
+        }
+        .item-content {
+            font-size: 14px;
+            color: #444;
+        }
+        ul {
+            padding-left: 18px;
+            margin-top: 8px;
+        }
+        li {
+            margin-bottom: 6px;
+            position: relative;
+        }
+        li::marker {
+            color: #667eea;
+        }
+        strong {
+            color: #667eea;
+        }
+        @page {
+            size: A4;
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="name">{{ name }}</div>
+        <div class="contact">
+            {% if phone %}<div class="contact-item">📱 {{ phone }}</div>{% endif %}
+            {% if email %}<div class="contact-item">📧 {{ email }}</div>{% endif %}
+            {% if location %}<div class="contact-item">📍 {{ location }}</div>{% endif %}
+            {% if github %}<div class="contact-item">💻 {{ github }}</div>{% endif %}
+            {% if linkedin %}<div class="contact-item">🔗 {{ linkedin }}</div>{% endif %}
+        </div>
+    </div>
+
+    {{ content | safe }}
+</body>
+</html>

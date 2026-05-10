@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ name }} - 简历</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Heiti SC', 'Songti SC', 'Hiragino Sans GB',
+                         'PingFang SC', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            padding: 15mm 18mm;
+            max-width: 210mm;
+            margin: 0 auto;
+            background: #fff;
+            font-size: 10.5pt;
+        }
+        /* ATS-friendly: clean, no decorative elements */
+        .header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #333;
+        }
+        .name {
+            font-size: 22pt;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #000;
+        }
+        .contact {
+            font-size: 9.5pt;
+            color: #444;
+        }
+        .contact span {
+            margin-right: 15px;
+        }
+        .section {
+            margin-bottom: 18px;
+        }
+        .section-title {
+            font-size: 12pt;
+            font-weight: bold;
+            color: #000;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #999;
+            padding-bottom: 4px;
+        }
+        .item {
+            margin-bottom: 12px;
+        }
+        .item-title {
+            font-weight: bold;
+            font-size: 10.5pt;
+            margin-bottom: 3px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .item-subtitle {
+            color: #555;
+            font-size: 9.5pt;
+            margin-bottom: 4px;
+        }
+        .item-content {
+            font-size: 10pt;
+        }
+        /* ATS-friendly: simple bullet points */
+        ul {
+            padding-left: 18px;
+            margin-top: 5px;
+            list-style-type: disc;
+        }
+        li {
+            margin-bottom: 3px;
+        }
+        /* ATS-friendly: avoid special characters, use standard formatting */
+        strong {
+            font-weight: bold;
+        }
+        /* Avoid: emojis, complex layouts, tables with merged cells */
+        @page {
+            size: A4;
+            margin: 15mm;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="name">{{ name }}</div>
+        <div class="contact">
+            {% if phone %}<span>Phone: {{ phone }}</span>{% endif %}
+            {% if email %}<span>Email: {{ email }}</span>{% endif %}
+            {% if location %}<span>Location: {{ location }}</span>{% endif %}
+            {% if github %}<span>GitHub: {{ github }}</span>{% endif %}
+        </div>
+    </div>
+
+    {{ content | safe }}
+</body>
+</html>

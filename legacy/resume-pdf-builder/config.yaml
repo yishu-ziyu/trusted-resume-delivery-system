@@ -1,0 +1,11 @@
+openai:
+  api_key: ${OPENAI_API_KEY}
+  model: "gpt-4o"
+
+paths:
+  templates_dir: "./templates"
+  output_dir: "./output"
+
+pdf:
+  default_template: "default.html"
+  page_size: "A4"

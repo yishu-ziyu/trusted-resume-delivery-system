@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# macOS / editors
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Runtime uploads / generated files for local web MVP
+uploads/
+generated/
+/tmp/
+.tmp/
+tmp/
+
+# Generated outputs and heavy artifacts
+output/
+legacy/resume-pdf-builder/output/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.mp4
+*.mov
+*.zip
+
+# Logs
+*.log
+logs/
+
+# Test/build artifacts
+build/
+dist/
+*.egg-info/
