@@ -57,6 +57,9 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf(tmp_path):
     assert "等待生成简历预览" in home_resp.text
     assert "PDF 简历" in home_resp.text
     assert "读取本机材料文件夹" in home_resp.text
+    assert "正式带照片版" in home_resp.text
+    assert "ATS 无照片版" in home_resp.text
+    assert "双栏带照片展示版" in home_resp.text
 
     analyze_resp = client.post("/api/analyze-jd", json={"jd_text": jd})
     assert analyze_resp.status_code == 200
@@ -131,3 +134,55 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf(tmp_path):
     extracted_text = "".join(page.get_text("text") for page in doc)
     assert "马浩宣" in extracted_text
     assert "来源说明" in extracted_text
+
+
+def test_template_selection_and_pdf_photo_reuse_from_original_resume():
+    client = TestClient(app)
+    source_pdf = Path("/Users/mahaoxuan/Desktop/马浩宣简历.pdf")
+    assert source_pdf.exists()
+    jd = "AI产品实习生：负责AI Agent调研、竞品分析、项目推进。"
+    upload_resp = client.post(
+        "/api/upload-materials",
+        json={
+            "filename": "马浩宣简历.pdf",
+            "content_base64": base64.b64encode(source_pdf.read_bytes()).decode("ascii"),
+            "content_type": "application/pdf",
+        },
+    )
+    assert upload_resp.status_code == 200
+    material_id = upload_resp.json()["material_id"]
+    assert upload_resp.json()["diagnostics"]["photo_candidate"] is True
+
+    formal_resp = client.post(
+        "/api/generate-resume",
+        json={"jd_text": jd, "material_ids": [material_id], "template_id": "formal_photo"},
+    )
+    assert formal_resp.status_code == 200
+    formal = formal_resp.json()
+    assert formal["resume_json"]["template"]["id"] == "formal_photo"
+    assert formal["resume_json"]["photo_data_uri"].startswith("data:image/")
+    formal_preview = client.get("/api/preview", params={"resume_id": formal["resume_id"]})
+    assert 'data-template="formal_photo"' in formal_preview.text
+    assert '<img class="avatar"' in formal_preview.text
+
+    ats_resp = client.post(
+        "/api/generate-resume",
+        json={"jd_text": jd, "material_ids": [material_id], "template_id": "ats"},
+    )
+    assert ats_resp.status_code == 200
+    ats = ats_resp.json()
+    assert ats["resume_json"]["template"]["id"] == "ats"
+    assert ats["resume_json"]["photo_data_uri"] is None
+    ats_preview = client.get("/api/preview", params={"resume_id": ats["resume_id"]})
+    assert 'data-template="ats"' in ats_preview.text
+    assert '<img class="avatar"' not in ats_preview.text
+
+    showcase_resp = client.post(
+        "/api/generate-resume",
+        json={"jd_text": jd, "material_ids": [material_id], "template_id": "showcase_photo"},
+    )
+    assert showcase_resp.status_code == 200
+    showcase = showcase_resp.json()
+    showcase_preview = client.get("/api/preview", params={"resume_id": showcase["resume_id"]})
+    assert 'data-template="showcase_photo"' in showcase_preview.text
+    assert '<img class="avatar"' in showcase_preview.text

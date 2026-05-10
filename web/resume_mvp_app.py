@@ -58,6 +58,7 @@ class GenerateResumeRequest(BaseModel):
     jd_text: str = Field(..., min_length=1)
     material_ids: List[str] = Field(default_factory=list)
     pasted_material: Optional[str] = None
+    template_id: str = Field(default="formal_photo")
 
 
 KEYWORD_GROUPS = {
@@ -66,6 +67,27 @@ KEYWORD_GROUPS = {
     "项目推进": ["项目", "推进", "协作", "管理", "统筹", "落地", "原型"],
     "数据分析": ["数据", "Python", "Stata", "SPSS", "Excel", "可视化", "计量"],
     "商业/金融": ["投资", "金融", "战略", "咨询", "商业", "财报", "估值"],
+}
+
+TEMPLATE_OPTIONS = {
+    "formal_photo": {
+        "name": "正式带照片版",
+        "description": "默认推荐：一页正式投递，保留头像，适合邮件投递、内推、咨询/金融/产品岗人工阅读。",
+        "with_photo": True,
+        "layout": "formal",
+    },
+    "ats": {
+        "name": "ATS 无照片版",
+        "description": "机器解析优先：无头像、单栏、弱装饰，适合网申系统和简历库解析。",
+        "with_photo": False,
+        "layout": "ats",
+    },
+    "showcase_photo": {
+        "name": "双栏带照片展示版",
+        "description": "展示阅读优先：双栏、头像和更强层级，适合熟人内推、面试官直接阅读。",
+        "with_photo": True,
+        "layout": "showcase",
+    },
 }
 
 
@@ -94,6 +116,12 @@ HOME_HTML = """<!doctype html>
     button:disabled { opacity:.55; cursor:not-allowed; }
     .muted { color:var(--muted); font-size:13px; }
     .actions { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .template-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:12px 0 4px; }
+    .template-card { text-align:left; border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:12px; padding:12px; min-height:112px; cursor:pointer; }
+    .template-card strong { display:block; margin-bottom:5px; }
+    .template-card span { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
+    .template-card.active { border:2px solid var(--blue); background:#eff6ff; padding:11px; }
+    .template-card .tag { display:inline-block; margin-top:8px; color:#1d4ed8; font-size:12px; font-weight:700; }
     .status { margin-top:14px; padding:10px 12px; border-radius:10px; background:#eef2ff; color:#1e3a8a; white-space:pre-wrap; }
     .result { margin-top:18px; display:none; }
     .preview-shell { margin-top:18px; display:grid; grid-template-columns:360px 1fr; gap:18px; align-items:start; }
@@ -123,6 +151,12 @@ HOME_HTML = """<!doctype html>
       <input id="folderPath" type="text" placeholder="可选：输入本机材料文件夹路径，例如 /Users/mahaoxuan/Desktop/春招" />
       <div class="actions"><button id="importFolder" class="secondary" type="button">读取本机材料文件夹</button></div>
       <p class="muted">本机目录读取只在这个本地 Demo 中可用，用来快速把已有简历、作品集、求职材料作为事实库导入。</p>
+      <label>3. 选择输出模板</label>
+      <div class="template-grid" role="radiogroup" aria-label="选择输出模板">
+        <button class="template-card active" type="button" data-template="formal_photo"><strong>正式带照片版</strong><span>默认推荐：正式投递、内推、人工阅读；会优先复用原 PDF 头像。</span><em class="tag">带头像</em></button>
+        <button class="template-card" type="button" data-template="ats"><strong>ATS 无照片版</strong><span>网申/机器解析优先；单栏、无头像、弱装饰。</span><em class="tag">无头像</em></button>
+        <button class="template-card" type="button" data-template="showcase_photo"><strong>双栏带照片展示版</strong><span>熟人内推、面试官直接阅读；更强视觉层级。</span><em class="tag">带头像</em></button>
+      </div>
       <textarea id="materialText">马浩宣｜华侨大学经济学本科｜yishuziyu@foxmail.com｜13310838384
 经历：深圳海坤投资管理有限公司，参与AI Agent投资机会研究与行业研究报告。
 项目：AIGC技术接受度调研，负责问卷设计、访谈整理、数据分析与报告撰写。
@@ -172,6 +206,16 @@ const downloadBtn = document.getElementById('download');
 const result = document.getElementById('result');
 let currentResumeId = null;
 let uploadedMaterialIds = [];
+let selectedTemplateId = 'formal_photo';
+
+document.querySelectorAll('.template-card').forEach(card => {
+  card.addEventListener('click', () => {
+    selectedTemplateId = card.dataset.template;
+    document.querySelectorAll('.template-card').forEach(x => x.classList.remove('active'));
+    card.classList.add('active');
+    statusEl.textContent = `已选择模板：${card.querySelector('strong').textContent}`;
+  });
+});
 
 function arrayBufferToBase64(buffer) {
   let binary = '';
@@ -257,7 +301,7 @@ generateBtn.addEventListener('click', async () => {
     statusEl.textContent = `正在分析 JD，并基于 ${materialIds.length} 份材料生成 Resume JSON...`;
     const gen = await fetch('/api/generate-resume', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({jd_text: jd.value, material_ids:materialIds})
+      body: JSON.stringify({jd_text: jd.value, material_ids:materialIds, template_id:selectedTemplateId})
     }).then(r => r.json());
     currentResumeId = gen.resume_id;
     const preview = await fetch(`/api/preview?resume_id=${encodeURIComponent(currentResumeId)}`).then(r => r.text());
@@ -304,6 +348,33 @@ def _normalize_extracted_text(value: str) -> str:
     return "\n".join(lines)
 
 
+def _extract_portrait_data_uri(doc: fitz.Document) -> Optional[str]:
+    """Pick the largest portrait-like embedded image from an uploaded PDF."""
+    best: Optional[Dict[str, Any]] = None
+    for page in doc:
+        for img in page.get_images(full=True):
+            xref = img[0]
+            try:
+                info = doc.extract_image(xref)
+            except Exception:
+                continue
+            width = int(info.get("width") or 0)
+            height = int(info.get("height") or 0)
+            if width < 40 or height < 40:
+                continue
+            aspect = width / max(height, 1)
+            area = width * height
+            portrait_bonus = 1.25 if 0.55 <= aspect <= 1.35 else 1.0
+            score = area * portrait_bonus
+            if not best or score > best["score"]:
+                ext = (info.get("ext") or "png").lower()
+                mime = "jpeg" if ext in {"jpg", "jpeg"} else "png"
+                best = {"score": score, "mime": mime, "image": info.get("image", b"")}
+    if not best or not best["image"]:
+        return None
+    return f"data:image/{best['mime']};base64," + base64.b64encode(best["image"]).decode("ascii")
+
+
 def _extract_pdf_text_and_diagnostics(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -315,18 +386,20 @@ def _extract_pdf_text_and_diagnostics(pdf_bytes: bytes, filename: str) -> Dict[s
     for page in doc:
         page_texts.append(page.get_text("text") or "")
         image_count += len(page.get_images(full=True))
+    photo_data_uri = _extract_portrait_data_uri(doc)
     text = _normalize_extracted_text("\n".join(page_texts))
     diagnostics = {
         "pages": len(doc),
         "images": image_count,
         "extractable_chars": len(text),
-        "summary": f"PDF {len(doc)}页，可提取{text and len(text) or 0}字，图片{image_count}张",
+        "summary": f"PDF {len(doc)}页，可提取{text and len(text) or 0}字，图片{image_count}张" + ("，已提取候选头像" if photo_data_uri else ""),
         "needs_ocr": len(text) < 30,
+        "photo_candidate": bool(photo_data_uri),
     }
     doc.close()
     if diagnostics["needs_ocr"]:
         text = text or "[PDF文本层过少：可能是扫描版或图片型PDF，后续需要OCR后才能作为强证据。]"
-    return {"content": text, "diagnostics": diagnostics}
+    return {"content": text, "diagnostics": diagnostics, "photo_data_uri": photo_data_uri}
 
 
 def _material_from_upload(filename: str, content_type: str, content: Optional[str], content_base64: Optional[str]) -> Dict[str, Any]:
@@ -344,6 +417,7 @@ def _material_from_upload(filename: str, content_type: str, content: Optional[st
             "content": extracted["content"],
             "content_type": "application/pdf",
             "diagnostics": extracted["diagnostics"],
+            "photo_data_uri": extracted.get("photo_data_uri"),
         }
 
     text = (content or "").strip()
@@ -436,9 +510,13 @@ def _dedupe_lines(lines: List[str]) -> List[str]:
     return result
 
 
-def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[str, Any]:
+def _build_resume_json(jd_text: str, materials: List[Dict[str, Any]], template_id: str = "formal_photo") -> Dict[str, Any]:
+    if template_id not in TEMPLATE_OPTIONS:
+        raise HTTPException(status_code=400, detail=f"未知模板：{template_id}")
+    template = TEMPLATE_OPTIONS[template_id]
     jd_info = analyze_jd_text(jd_text)
     material_text = "\n".join(m["content"] for m in materials)
+    photo_data_uri = next((m.get("photo_data_uri") for m in materials if m.get("photo_data_uri")), None)
     contact = _extract_contact(material_text)
     material_hits = _keyword_hits(material_text)
     jd_hits = jd_info["keywords"]
@@ -471,6 +549,8 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[st
         "jd_summary": jd_info["jd_summary"],
         "candidate_summary": "候选材料与岗位关键词的交集：" + ("、".join(overlap) if overlap else "暂未发现强交集，建议补充更具体材料"),
         "match_score": score,
+        "template": {"id": template_id, **template},
+        "photo_data_uri": photo_data_uri if template.get("with_photo") else None,
         "resume": {
             "name": contact["name"],
             "contact": contact["contact"],
@@ -486,28 +566,41 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[st
 
 def _render_resume_html(resume_json: Dict[str, Any]) -> str:
     resume = resume_json["resume"]
+    template = resume_json.get("template") or TEMPLATE_OPTIONS["formal_photo"]
+    template_id = template.get("id", "formal_photo")
+    photo_data_uri = resume_json.get("photo_data_uri")
 
-    def section(title: str, items: List[str]) -> str:
-        escaped_items = "".join(f"<li>{html.escape(item)}</li>" for item in items) or "<li>暂无可确认材料，建议补充来源。</li>"
+    def section(title: str, items: List[str], max_items: int = 5) -> str:
+        shown = (items or [])[:max_items]
+        escaped_items = "".join(f"<li>{html.escape(item)}</li>" for item in shown) or "<li>暂无可确认材料，建议补充来源。</li>"
         return f"<section><h3>{html.escape(title)}</h3><ul>{escaped_items}</ul></section>"
 
     notes = "".join(
         f"<li>{html.escape(n['claim'])}<br><small>来源：{html.escape(n['source'])}｜可信度：{html.escape(n['confidence'])}</small></li>"
-        for n in resume_json["source_notes"]
+        for n in resume_json["source_notes"][:8]
     )
-    return f"""
-    <article class="resume-doc">
-      <style>
-        .resume-doc {{ font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',Arial,sans-serif; color:#111827; line-height:1.55; }}
-        .resume-doc h2 {{ margin:0 0 6px; font-size:24px; }}
-        .resume-doc .meta {{ color:#4b5563; border-bottom:1px solid #d8dee8; padding-bottom:10px; margin-bottom:12px; }}
-        .resume-doc h3 {{ margin:14px 0 6px; font-size:15px; color:#1d4ed8; }}
-        .resume-doc ul {{ margin:0; padding-left:18px; }}
-        .resume-doc li {{ margin:4px 0; }}
-        .resume-doc small {{ color:#6b7280; }}
+    photo_html = f'<img class="avatar" src="{photo_data_uri}" alt="候选头像" />' if photo_data_uri else '<div class="avatar placeholder-avatar">无头像</div>'
+    contact = f"{html.escape(resume['contact'].get('email',''))} ｜ {html.escape(resume['contact'].get('phone',''))} ｜ 目标：{html.escape(resume_json['target_role'])}"
+    common_style = """
+        .resume-doc { font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',Arial,sans-serif; color:#111827; line-height:1.48; }
+        .resume-doc h2 { margin:0 0 6px; font-size:24px; letter-spacing:.04em; }
+        .resume-doc h3 { margin:13px 0 6px; font-size:14px; color:#1d4ed8; border-bottom:1px solid #d8dee8; padding-bottom:3px; }
+        .resume-doc ul { margin:0; padding-left:17px; }
+        .resume-doc li { margin:3px 0; }
+        .resume-doc small { color:#6b7280; }
+        .resume-doc .meta { color:#4b5563; font-size:12px; }
+        .resume-doc .avatar { width:76px; height:92px; object-fit:cover; border-radius:10px; border:1px solid #d8dee8; background:#f3f4f6; }
+        .resume-doc .placeholder-avatar { display:flex; align-items:center; justify-content:center; color:#9ca3af; font-size:12px; }
+    """
+    if template_id == "ats":
+        return f"""
+    <article class="resume-doc resume-ats" data-template="ats">
+      <style>{common_style}
+        .resume-ats {{ background:#fff; }}
+        .resume-ats .meta {{ border-bottom:1px solid #d8dee8; padding-bottom:10px; margin-bottom:12px; }}
       </style>
       <h2>{html.escape(resume['name'])}</h2>
-      <div class="meta">{html.escape(resume['contact'].get('email',''))} ｜ {html.escape(resume['contact'].get('phone',''))} ｜ 目标：{html.escape(resume_json['target_role'])}</div>
+      <div class="meta">{contact}</div>
       <p><strong>岗位匹配摘要：</strong>{html.escape(resume_json['candidate_summary'])}</p>
       {section('教育背景', resume['education'])}
       {section('经历', resume['experiences'])}
@@ -517,7 +610,33 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
       <section><h3>来源说明</h3><ul>{notes}</ul></section>
     </article>
     """
-
+    if template_id == "showcase_photo":
+        return f"""
+    <article class="resume-doc resume-showcase" data-template="showcase_photo">
+      <style>{common_style}
+        .resume-showcase {{ display:grid; grid-template-columns:31% 1fr; min-height:100%; border:1px solid #d8dee8; }}
+        .resume-showcase .side {{ background:#eef4ff; padding:18px 14px; }}
+        .resume-showcase .main {{ padding:18px 20px; }}
+        .resume-showcase .avatar {{ width:88px; height:108px; margin-bottom:10px; }}
+        .resume-showcase h3 {{ color:#1e3a8a; }}
+      </style>
+      <aside class="side">{photo_html}<h2>{html.escape(resume['name'])}</h2><div class="meta">{contact}</div>{section('技能', resume['skills'], 4)}{section('来源说明', [n['claim'] for n in resume_json['source_notes'][:4]], 4)}</aside>
+      <main class="main"><p><strong>岗位匹配摘要：</strong>{html.escape(resume_json['candidate_summary'])}</p>{section('教育背景', resume['education'])}{section('经历', resume['experiences'])}{section('项目', resume['projects'])}{section('奖项/证书', resume['awards'])}</main>
+    </article>
+    """
+    return f"""
+    <article class="resume-doc resume-formal" data-template="formal_photo">
+      <style>{common_style}
+        .resume-formal {{ border:1px solid #d8dee8; padding:18px 20px; position:relative; overflow:hidden; }}
+        .resume-formal:before {{ content:""; position:absolute; right:-30px; top:-30px; width:150px; height:150px; background:linear-gradient(135deg, rgba(37,99,235,.08), transparent); border-radius:999px; }}
+        .resume-formal .head {{ display:grid; grid-template-columns:92px 1fr; gap:14px; align-items:center; position:relative; z-index:1; border-bottom:1px solid #d8dee8; padding-bottom:12px; margin-bottom:10px; }}
+        .resume-formal .body {{ display:grid; grid-template-columns:1fr 1fr; gap:0 20px; position:relative; z-index:1; }}
+        .resume-formal .full {{ grid-column:1 / -1; }}
+      </style>
+      <div class="head">{photo_html}<div><h2>{html.escape(resume['name'])}</h2><div class="meta">{contact}</div><p><strong>岗位匹配摘要：</strong>{html.escape(resume_json['candidate_summary'])}</p></div></div>
+      <div class="body">{section('教育背景', resume['education'])}{section('技能', resume['skills'])}<div class="full">{section('经历', resume['experiences'])}</div><div class="full">{section('项目', resume['projects'])}</div>{section('奖项/证书', resume['awards'])}<section><h3>来源说明</h3><ul>{notes}</ul></section></div>
+    </article>
+    """
 
 def _write_pdf(resume_id: str, resume_json: Dict[str, Any]) -> Path:
     """Render PDF from HTML with Chrome so Chinese text is not garbled."""
@@ -678,7 +797,7 @@ def import_local_folder(req: LocalFolderImportRequest) -> Dict[str, Any]:
 
 @app.post("/api/generate-resume")
 def generate_resume(req: GenerateResumeRequest) -> Dict[str, Any]:
-    materials: List[Dict[str, str]] = []
+    materials: List[Dict[str, Any]] = []
     for material_id in req.material_ids:
         if material_id not in MATERIAL_STORE:
             raise HTTPException(status_code=404, detail=f"material_id not found: {material_id}")
@@ -688,7 +807,7 @@ def generate_resume(req: GenerateResumeRequest) -> Dict[str, Any]:
     if not materials:
         raise HTTPException(status_code=400, detail="请先上传或粘贴至少一份个人材料")
 
-    resume_json = _build_resume_json(req.jd_text, materials)
+    resume_json = _build_resume_json(req.jd_text, materials, req.template_id)
     resume_id = uuid.uuid4().hex
     preview_html = _render_resume_html(resume_json)
     pdf_path = _write_pdf(resume_id, resume_json)
