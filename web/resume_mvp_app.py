@@ -30,7 +30,7 @@ app = FastAPI(
     version="0.1.0",
 )
 
-MATERIAL_STORE: Dict[str, Dict[str, str]] = {}
+MATERIAL_STORE: Dict[str, Dict[str, Any]] = {}
 RESUME_STORE: Dict[str, Dict[str, Any]] = {}
 SUPPORTED_TEXT_SUFFIXES = {".txt", ".md", ".markdown"}
 SUPPORTED_PDF_SUFFIXES = {".pdf"}
@@ -59,6 +59,8 @@ class GenerateResumeRequest(BaseModel):
     material_ids: List[str] = Field(default_factory=list)
     pasted_material: Optional[str] = None
     template_id: str = Field(default="formal_photo")
+    resume_mode: str = Field(default="improve_existing")
+    template_source: str = Field(default="uploaded_resume")
 
 
 KEYWORD_GROUPS = {
@@ -122,6 +124,15 @@ HOME_HTML = """<!doctype html>
     .template-card span { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
     .template-card.active { border:2px solid var(--blue); background:#eff6ff; padding:11px; }
     .template-card .tag { display:inline-block; margin-top:8px; color:#1d4ed8; font-size:12px; font-weight:700; }
+    .material-list { margin-top:10px; display:grid; gap:8px; max-height:170px; overflow:auto; }
+    .material-item { border:1px solid var(--line); border-radius:10px; padding:9px 10px; background:#fbfdff; font-size:12px; display:grid; grid-template-columns:auto 1fr; gap:8px; align-items:start; }
+    .material-item strong { display:block; font-size:13px; margin-bottom:3px; }
+    .mode-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0 12px; }
+    .mode-card { text-align:left; border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:12px; padding:11px; cursor:pointer; }
+    .mode-card.active { border:2px solid #0f766e; background:#f0fdfa; padding:10px; }
+    .source-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0 12px; }
+    .source-card { text-align:left; border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:12px; padding:11px; cursor:pointer; }
+    .source-card.active { border:2px solid #7c3aed; background:#f5f3ff; padding:10px; }
     .status { margin-top:14px; padding:10px 12px; border-radius:10px; background:#eef2ff; color:#1e3a8a; white-space:pre-wrap; }
     .result { margin-top:18px; display:none; }
     .preview-shell { margin-top:18px; display:grid; grid-template-columns:360px 1fr; gap:18px; align-items:start; }
@@ -145,12 +156,22 @@ HOME_HTML = """<!doctype html>
       <textarea id="jd">AI产品实习生：负责AI Agent产品调研、用户需求分析、竞品分析、原型协作、项目推进，要求能输出结构化报告。</textarea>
     </div>
     <div class="card">
-      <label for="materialText">2. 上传原简历 / 粘贴个人材料</label>
+      <label for="materialText">2A. 上传你想改进的原简历 / 模板</label>
       <input id="file" type="file" accept=".pdf,.txt,.md,.markdown,application/pdf,text/plain,text/markdown" multiple />
-      <p class="muted">支持上传已有 PDF 简历、txt、Markdown。PDF 会在后端用 PyMuPDF 提取文本并做基础诊断；提取不到文本的扫描版 PDF 会提示后续需要 OCR。</p>
+      <p class="muted">如果用户已有自己做好的简历，请先上传这份简历；系统会优先从它提取姓名、联系方式、教育/经历和头像。没有模板时，可直接使用下面的系统模板。</p>
+      <div class="mode-grid" role="radiogroup" aria-label="选择生成方式">
+        <button class="mode-card active" type="button" data-mode="improve_existing"><strong>基于已有简历改进</strong><span class="muted">推荐：上传原简历/模板后，再用材料库补充证据。</span></button>
+        <button class="mode-card" type="button" data-mode="new_from_materials"><strong>没有模板，生成新简历</strong><span class="muted">只基于材料库和 JD 生成系统模板。</span></button>
+      </div>
+      <div class="source-grid" role="radiogroup" aria-label="选择模板来源">
+        <button class="source-card active" type="button" data-source="uploaded_resume"><strong>沿用上传简历信息</strong><span class="muted">优先复用上传 PDF 的姓名、联系方式、头像和基础事实，不承诺像素级克隆。</span></button>
+        <button class="source-card" type="button" data-source="system_template"><strong>使用系统模板</strong><span class="muted">不依赖原简历版式，用系统内置正式/ATS/展示模板重排。</span></button>
+      </div>
+      <label for="folderPath">2B. 补充事实材料库</label>
       <input id="folderPath" type="text" placeholder="可选：输入本机材料文件夹路径，例如 /Users/mahaoxuan/Desktop/春招" />
       <div class="actions"><button id="importFolder" class="secondary" type="button">读取本机材料文件夹</button></div>
-      <p class="muted">本机目录读取只在这个本地 Demo 中可用，用来快速把已有简历、作品集、求职材料作为事实库导入。</p>
+      <p class="muted">导入后会显示可勾选材料，默认优先选中“简历/高相关材料”，避免把文件夹里所有资料无差别塞进简历。</p>
+      <div id="materialList" class="material-list"></div>
       <label>3. 选择输出模板</label>
       <div class="template-grid" role="radiogroup" aria-label="选择输出模板">
         <button class="template-card active" type="button" data-template="formal_photo"><strong>正式带照片版</strong><span>默认推荐：正式投递、内推、人工阅读；会优先复用原 PDF 头像。</span><em class="tag">带头像</em></button>
@@ -204,9 +225,26 @@ const statusEl = document.getElementById('status');
 const generateBtn = document.getElementById('generate');
 const downloadBtn = document.getElementById('download');
 const result = document.getElementById('result');
+const materialList = document.getElementById('materialList');
 let currentResumeId = null;
 let uploadedMaterialIds = [];
+let selectedMaterialIds = new Set();
 let selectedTemplateId = 'formal_photo';
+let selectedMode = 'improve_existing';
+let selectedTemplateSource = 'uploaded_resume';
+
+function addMaterialItem(item, checked=true) {
+  if (checked) selectedMaterialIds.add(item.material_id);
+  const label = document.createElement('label');
+  label.className = 'material-item';
+  label.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} data-id="${item.material_id}">
+    <span><strong>${item.filename}</strong><span class="muted">${item.material_type || 'material'}｜相关度${item.relevance_score ?? '-'}｜${item.diagnostics?.summary || item.chars + '字'}</span></span>`;
+  label.querySelector('input').addEventListener('change', (event) => {
+    if (event.target.checked) selectedMaterialIds.add(item.material_id);
+    else selectedMaterialIds.delete(item.material_id);
+  });
+  materialList.appendChild(label);
+}
 
 document.querySelectorAll('.template-card').forEach(card => {
   card.addEventListener('click', () => {
@@ -214,6 +252,24 @@ document.querySelectorAll('.template-card').forEach(card => {
     document.querySelectorAll('.template-card').forEach(x => x.classList.remove('active'));
     card.classList.add('active');
     statusEl.textContent = `已选择模板：${card.querySelector('strong').textContent}`;
+  });
+});
+
+document.querySelectorAll('.mode-card').forEach(card => {
+  card.addEventListener('click', () => {
+    selectedMode = card.dataset.mode;
+    document.querySelectorAll('.mode-card').forEach(x => x.classList.remove('active'));
+    card.classList.add('active');
+    statusEl.textContent = `已选择生成方式：${card.querySelector('strong').textContent}`;
+  });
+});
+
+document.querySelectorAll('.source-card').forEach(card => {
+  card.addEventListener('click', () => {
+    selectedTemplateSource = card.dataset.source;
+    document.querySelectorAll('.source-card').forEach(x => x.classList.remove('active'));
+    card.classList.add('active');
+    statusEl.textContent = `已选择模板来源：${card.querySelector('strong').textContent}`;
   });
 });
 
@@ -248,10 +304,13 @@ fileInput.addEventListener('change', async () => {
   try {
     statusEl.textContent = `正在读取 ${files.length} 个文件...`;
     uploadedMaterialIds = [];
+    selectedMaterialIds = new Set();
+    materialList.innerHTML = '';
     const summaries = [];
     for (const file of files) {
       const data = await uploadFile(file);
       uploadedMaterialIds.push(data.material_id);
+      addMaterialItem(data, true);
       summaries.push(`${data.filename}（${data.chars}字${data.diagnostics ? '，' + data.diagnostics.summary : ''}）`);
     }
     statusEl.textContent = `已导入：${summaries.join('；')}`;
@@ -276,7 +335,8 @@ importFolderBtn.addEventListener('click', async () => {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || JSON.stringify(data));
     uploadedMaterialIds = uploadedMaterialIds.concat(data.material_ids);
-    statusEl.textContent = `已从文件夹导入 ${data.imported_count} 份材料：${data.imported_files.join('；')}`;
+    (data.imported_materials || []).forEach((item) => addMaterialItem(item, item.default_selected));
+    statusEl.textContent = `已从文件夹导入 ${data.imported_count} 份材料，默认选中 ${selectedMaterialIds.size} 份高相关/简历材料。请在材料列表中勾选后再生成。`;
   } catch (err) {
     statusEl.textContent = '读取文件夹失败：' + err;
   } finally {
@@ -288,7 +348,7 @@ generateBtn.addEventListener('click', async () => {
   try {
     generateBtn.disabled = true;
     statusEl.textContent = '正在整理材料并生成 Resume JSON...';
-    let materialIds = [...uploadedMaterialIds];
+    let materialIds = Array.from(selectedMaterialIds);
     const pasted = materialText.value.trim();
     if (pasted) {
       const upload = await fetch('/api/upload-materials', {
@@ -296,12 +356,13 @@ generateBtn.addEventListener('click', async () => {
         body: JSON.stringify({filename:'粘贴材料.md', content:pasted, content_type:'text/markdown'})
       }).then(r => r.json());
       materialIds.push(upload.material_id);
+      if (!selectedMaterialIds.has(upload.material_id)) addMaterialItem(upload, true);
     }
     if (!materialIds.length) throw new Error('请先上传 PDF/txt/Markdown、读取本机文件夹，或粘贴个人材料。');
     statusEl.textContent = `正在分析 JD，并基于 ${materialIds.length} 份材料生成 Resume JSON...`;
     const gen = await fetch('/api/generate-resume', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({jd_text: jd.value, material_ids:materialIds, template_id:selectedTemplateId})
+      body: JSON.stringify({jd_text: jd.value, material_ids:materialIds, template_id:selectedTemplateId, resume_mode:selectedMode, template_source:selectedTemplateSource})
     }).then(r => r.json());
     currentResumeId = gen.resume_id;
     const preview = await fetch(`/api/preview?resume_id=${encodeURIComponent(currentResumeId)}`).then(r => r.text());
@@ -402,6 +463,26 @@ def _extract_pdf_text_and_diagnostics(pdf_bytes: bytes, filename: str) -> Dict[s
     return {"content": text, "diagnostics": diagnostics, "photo_data_uri": photo_data_uri}
 
 
+def _classify_material(filename: str, content: str, diagnostics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    text = f"{filename}\n{content}".lower()
+    diagnostics = diagnostics or {}
+    if "简历" in filename or "resume" in text or ("@" in content and "大学" in content and ("经历" in content or "项目" in content)):
+        material_type = "resume_template"
+        score = 100
+    elif any(word in text for word in ["作品集", "portfolio", "项目", "报告", "调研", "prd"]):
+        material_type = "evidence"
+        score = 75
+    elif any(word in text for word in ["证书", "成绩单", "身份证", "个人材料"]):
+        material_type = "private_or_certificate"
+        score = 35
+    else:
+        material_type = "background_material"
+        score = 55
+    if diagnostics.get("needs_ocr"):
+        score = min(score, 25)
+    return {"material_type": material_type, "relevance_score": score, "default_selected": score >= 55}
+
+
 def _material_from_upload(filename: str, content_type: str, content: Optional[str], content_base64: Optional[str]) -> Dict[str, Any]:
     suffix = Path(filename).suffix.lower()
     if content_base64 or suffix == ".pdf" or content_type == "application/pdf":
@@ -412,23 +493,27 @@ def _material_from_upload(filename: str, content_type: str, content: Optional[st
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"base64 解码失败：{exc}") from exc
         extracted = _extract_pdf_text_and_diagnostics(pdf_bytes, filename)
-        return {
+        material = {
             "filename": filename,
             "content": extracted["content"],
             "content_type": "application/pdf",
             "diagnostics": extracted["diagnostics"],
             "photo_data_uri": extracted.get("photo_data_uri"),
         }
+        material.update(_classify_material(filename, extracted["content"], extracted["diagnostics"]))
+        return material
 
     text = (content or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="上传材料内容为空")
-    return {
+    material = {
         "filename": filename,
         "content": text,
         "content_type": content_type or "text/plain",
         "diagnostics": {"summary": f"文本{len(text)}字"},
     }
+    material.update(_classify_material(filename, text, material["diagnostics"]))
+    return material
 
 
 def _read_supported_file(path: Path) -> Dict[str, Any]:
@@ -485,6 +570,12 @@ def _extract_contact(material_text: str) -> Dict[str, Any]:
     }
 
 
+def _clean_resume_item(line: str) -> str:
+    line = _clean_text(line).strip("-• ")
+    line = re.sub(r"^(经历|项目|技能|教育|奖项|证书|实习|工作)[:：]\s*", "", line)
+    return line
+
+
 def _find_lines(material_text: str, words: List[str], limit: int) -> List[str]:
     lines = []
     seen = set()
@@ -493,8 +584,10 @@ def _find_lines(material_text: str, words: List[str], limit: int) -> List[str]:
         if not line:
             continue
         if any(w.lower() in line.lower() for w in words) and line not in seen:
-            lines.append(line)
-            seen.add(line)
+            cleaned = _clean_resume_item(line)
+            if cleaned and cleaned not in seen:
+                lines.append(cleaned)
+                seen.add(cleaned)
         if len(lines) >= limit:
             break
     return lines
@@ -510,7 +603,13 @@ def _dedupe_lines(lines: List[str]) -> List[str]:
     return result
 
 
-def _build_resume_json(jd_text: str, materials: List[Dict[str, Any]], template_id: str = "formal_photo") -> Dict[str, Any]:
+def _build_resume_json(
+    jd_text: str,
+    materials: List[Dict[str, Any]],
+    template_id: str = "formal_photo",
+    resume_mode: str = "improve_existing",
+    template_source: str = "uploaded_resume",
+) -> Dict[str, Any]:
     if template_id not in TEMPLATE_OPTIONS:
         raise HTTPException(status_code=400, detail=f"未知模板：{template_id}")
     template = TEMPLATE_OPTIONS[template_id]
@@ -524,6 +623,7 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, Any]], template_i
     score = min(95, 45 + len(overlap) * 12 + min(len(material_text) // 180, 18))
 
     education_lines = _find_lines(material_text, ["大学", "本科", "硕士", "专业", "毕业"], 2)
+    education_lines = ["｜".join(part for part in line.split("｜") if any(k in part for k in ["大学", "本科", "硕士", "专业", "毕业"])) or line for line in education_lines]
     experience_lines = _find_lines(material_text, ["经历", "实习", "公司", "银行", "投资", "岗位"], 4)
     project_lines = [
         line for line in _find_lines(material_text, ["项目", "调研", "报告", "Agent", "AIGC", "插件", "App"], 8)
@@ -547,10 +647,12 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, Any]], template_i
     return {
         "target_role": jd_info["target_role"],
         "jd_summary": jd_info["jd_summary"],
-        "candidate_summary": "候选材料与岗位关键词的交集：" + ("、".join(overlap) if overlap else "暂未发现强交集，建议补充更具体材料"),
+        "candidate_summary": "匹配方向：" + ("、".join(overlap) if overlap else "需要用户补充更具体的岗位相关材料"),
         "match_score": score,
         "template": {"id": template_id, **template},
-        "photo_data_uri": photo_data_uri if template.get("with_photo") else None,
+        "template_source": template_source,
+        "resume_mode": resume_mode,
+        "photo_data_uri": photo_data_uri if template.get("with_photo") and template_source == "uploaded_resume" else None,
         "resume": {
             "name": contact["name"],
             "contact": contact["contact"],
@@ -579,7 +681,7 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
         f"<li>{html.escape(n['claim'])}<br><small>来源：{html.escape(n['source'])}｜可信度：{html.escape(n['confidence'])}</small></li>"
         for n in resume_json["source_notes"][:8]
     )
-    photo_html = f'<img class="avatar" src="{photo_data_uri}" alt="候选头像" />' if photo_data_uri else '<div class="avatar placeholder-avatar">无头像</div>'
+    photo_html = f'<img class="avatar" src="{photo_data_uri}" alt="候选头像" />' if photo_data_uri else ''
     contact = f"{html.escape(resume['contact'].get('email',''))} ｜ {html.escape(resume['contact'].get('phone',''))} ｜ 目标：{html.escape(resume_json['target_role'])}"
     common_style = """
         .resume-doc { font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',Arial,sans-serif; color:#111827; line-height:1.48; }
@@ -591,6 +693,7 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
         .resume-doc .meta { color:#4b5563; font-size:12px; }
         .resume-doc .avatar { width:76px; height:92px; object-fit:cover; border-radius:10px; border:1px solid #d8dee8; background:#f3f4f6; }
         .resume-doc .placeholder-avatar { display:flex; align-items:center; justify-content:center; color:#9ca3af; font-size:12px; }
+        .resume-doc .source-hint { color:#6b7280; font-size:11px; margin-top:10px; border-top:1px dashed #d8dee8; padding-top:6px; }
     """
     if template_id == "ats":
         return f"""
@@ -607,7 +710,6 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
       {section('项目', resume['projects'])}
       {section('技能', resume['skills'])}
       {section('奖项/证书', resume['awards'])}
-      <section><h3>来源说明</h3><ul>{notes}</ul></section>
     </article>
     """
     if template_id == "showcase_photo":
@@ -620,7 +722,7 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
         .resume-showcase .avatar {{ width:88px; height:108px; margin-bottom:10px; }}
         .resume-showcase h3 {{ color:#1e3a8a; }}
       </style>
-      <aside class="side">{photo_html}<h2>{html.escape(resume['name'])}</h2><div class="meta">{contact}</div>{section('技能', resume['skills'], 4)}{section('来源说明', [n['claim'] for n in resume_json['source_notes'][:4]], 4)}</aside>
+      <aside class="side">{photo_html}<h2>{html.escape(resume['name'])}</h2><div class="meta">{contact}</div>{section('技能', resume['skills'], 4)}</aside>
       <main class="main"><p><strong>岗位匹配摘要：</strong>{html.escape(resume_json['candidate_summary'])}</p>{section('教育背景', resume['education'])}{section('经历', resume['experiences'])}{section('项目', resume['projects'])}{section('奖项/证书', resume['awards'])}</main>
     </article>
     """
@@ -629,12 +731,12 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
       <style>{common_style}
         .resume-formal {{ border:1px solid #d8dee8; padding:18px 20px; position:relative; overflow:hidden; }}
         .resume-formal:before {{ content:""; position:absolute; right:-30px; top:-30px; width:150px; height:150px; background:linear-gradient(135deg, rgba(37,99,235,.08), transparent); border-radius:999px; }}
-        .resume-formal .head {{ display:grid; grid-template-columns:92px 1fr; gap:14px; align-items:center; position:relative; z-index:1; border-bottom:1px solid #d8dee8; padding-bottom:12px; margin-bottom:10px; }}
+        .resume-formal .head {{ display:grid; grid-template-columns:{'92px 1fr' if photo_data_uri else '1fr'}; gap:14px; align-items:center; position:relative; z-index:1; border-bottom:1px solid #d8dee8; padding-bottom:12px; margin-bottom:10px; }}
         .resume-formal .body {{ display:grid; grid-template-columns:1fr 1fr; gap:0 20px; position:relative; z-index:1; }}
         .resume-formal .full {{ grid-column:1 / -1; }}
       </style>
       <div class="head">{photo_html}<div><h2>{html.escape(resume['name'])}</h2><div class="meta">{contact}</div><p><strong>岗位匹配摘要：</strong>{html.escape(resume_json['candidate_summary'])}</p></div></div>
-      <div class="body">{section('教育背景', resume['education'])}{section('技能', resume['skills'])}<div class="full">{section('经历', resume['experiences'])}</div><div class="full">{section('项目', resume['projects'])}</div>{section('奖项/证书', resume['awards'])}<section><h3>来源说明</h3><ul>{notes}</ul></section></div>
+      <div class="body">{section('教育背景', resume['education'])}{section('技能', resume['skills'])}<div class="full">{section('经历', resume['experiences'])}</div><div class="full">{section('项目', resume['projects'])}</div>{section('奖项/证书', resume['awards'])}</div>
     </article>
     """
 
@@ -706,12 +808,6 @@ def _write_pdf_with_pymupdf_fallback(resume_id: str, resume_json: Dict[str, Any]
             if y > 760:
                 page = doc.new_page(width=595, height=842)
                 y = 48
-    y = _insert_wrapped(page, "来源说明", margin, y + 8, 500, 12, color=(0.11, 0.31, 0.85)) + 2
-    for note in resume_json["source_notes"][:10]:
-        text = f"• {note['claim']}｜来源：{note['source']}｜可信度：{note['confidence']}"
-        y = _insert_wrapped(page, text, margin + 8, y, 492, 8, color=(0.25, 0.30, 0.38)) + 2
-        if y > 780:
-            break
     doc.save(str(pdf_path))
     doc.close()
     return pdf_path
@@ -753,6 +849,9 @@ def upload_materials(req: MaterialUploadRequest) -> Dict[str, Any]:
         "filename": material["filename"],
         "chars": len(material["content"]),
         "diagnostics": material.get("diagnostics", {}),
+        "material_type": material.get("material_type"),
+        "relevance_score": material.get("relevance_score"),
+        "default_selected": material.get("default_selected", True),
     }
 
 
@@ -768,6 +867,7 @@ def import_local_folder(req: LocalFolderImportRequest) -> Dict[str, Any]:
 
     imported_ids: List[str] = []
     imported_files: List[str] = []
+    imported_materials: List[Dict[str, Any]] = []
     skipped_files: List[str] = []
     for path in candidates[: req.max_files]:
         try:
@@ -780,6 +880,15 @@ def import_local_folder(req: LocalFolderImportRequest) -> Dict[str, Any]:
         MATERIAL_STORE[material_id] = material
         imported_ids.append(material_id)
         imported_files.append(path.name)
+        imported_materials.append({
+            "material_id": material_id,
+            "filename": path.name,
+            "chars": len(material.get("content", "")),
+            "diagnostics": material.get("diagnostics", {}),
+            "material_type": material.get("material_type"),
+            "relevance_score": material.get("relevance_score"),
+            "default_selected": material.get("default_selected", False),
+        })
 
     if not imported_ids:
         raise HTTPException(status_code=400, detail="找到文件但均未能成功读取")
@@ -790,6 +899,7 @@ def import_local_folder(req: LocalFolderImportRequest) -> Dict[str, Any]:
         "material_ids": imported_ids,
         "imported_count": len(imported_ids),
         "imported_files": imported_files,
+        "imported_materials": sorted(imported_materials, key=lambda x: x.get("relevance_score") or 0, reverse=True),
         "skipped_files": skipped_files,
         "limited": len(candidates) > req.max_files,
     }
@@ -807,7 +917,13 @@ def generate_resume(req: GenerateResumeRequest) -> Dict[str, Any]:
     if not materials:
         raise HTTPException(status_code=400, detail="请先上传或粘贴至少一份个人材料")
 
-    resume_json = _build_resume_json(req.jd_text, materials, req.template_id)
+    resume_json = _build_resume_json(
+        req.jd_text,
+        materials,
+        template_id=req.template_id,
+        resume_mode=req.resume_mode,
+        template_source=req.template_source,
+    )
     resume_id = uuid.uuid4().hex
     preview_html = _render_resume_html(resume_json)
     pdf_path = _write_pdf(resume_id, resume_json)
