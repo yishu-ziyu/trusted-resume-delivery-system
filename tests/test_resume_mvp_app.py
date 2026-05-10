@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import fitz
 
 from web.resume_mvp_app import app
 
@@ -16,6 +17,11 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf():
     项目：chrome-md-editor Markdown网页插件；battery-takeover Mac电池管理App。
     技能：Python、Stata、SPSS、Excel、Prompt Engineering、AI IDE。
     """.strip()
+
+    home_resp = client.get("/")
+    assert home_resp.status_code == 200
+    assert "简历预览" in home_resp.text
+    assert "等待生成简历预览" in home_resp.text
 
     analyze_resp = client.post("/api/analyze-jd", json={"jd_text": jd})
     assert analyze_resp.status_code == 200
@@ -40,6 +46,9 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf():
     assert data["resume_json"]["source_notes"]
     assert data["resume_json"]["resume"]["name"] == "马浩宣"
     assert data["resume_json"]["candidate_summary"]
+    assert all(not item.startswith("经历：") for item in data["resume_json"]["resume"]["projects"])
+    claims = [note["claim"] for note in data["resume_json"]["source_notes"]]
+    assert len(claims) == len(set(claims))
 
     preview_resp = client.get("/api/preview", params={"resume_id": data["resume_id"]})
     assert preview_resp.status_code == 200
@@ -50,3 +59,7 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf():
     assert pdf_resp.status_code == 200
     assert pdf_resp.headers["content-type"].startswith("application/pdf")
     assert pdf_resp.content[:4] == b"%PDF"
+    doc = fitz.open(stream=pdf_resp.content, filetype="pdf")
+    extracted_text = "".join(page.get_text("text") for page in doc)
+    assert "马浩宣" in extracted_text
+    assert "来源说明" in extracted_text

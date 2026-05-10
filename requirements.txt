@@ -8,3 +8,4 @@ weasyprint>=60.0
 markdown>=3.4.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
+PyMuPDF>=1.23.0

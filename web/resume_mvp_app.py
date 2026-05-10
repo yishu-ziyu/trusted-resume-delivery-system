@@ -8,6 +8,7 @@
 
 import html
 import re
+import subprocess
 import textwrap
 import uuid
 from pathlib import Path
@@ -83,9 +84,12 @@ HOME_HTML = """<!doctype html>
     .actions { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
     .status { margin-top:14px; padding:10px 12px; border-radius:10px; background:#eef2ff; color:#1e3a8a; white-space:pre-wrap; }
     .result { margin-top:18px; display:none; }
-    .resume-preview { margin-top:12px; border:1px solid var(--line); border-radius:12px; background:#fff; padding:20px; }
+    .preview-shell { margin-top:18px; display:grid; grid-template-columns:360px 1fr; gap:18px; align-items:start; }
+    .preview-panel { background:#e5e7eb; border:1px solid var(--line); border-radius:14px; padding:18px; min-height:720px; display:flex; justify-content:center; align-items:flex-start; }
+    .resume-preview { width:100%; max-width:760px; min-height:680px; border:1px solid #cfd6e2; border-radius:6px; background:#fff; padding:28px; box-shadow:0 16px 38px rgba(15,23,42,.12); }
+    .placeholder { color:var(--muted); text-align:center; margin-top:260px; line-height:1.8; }
     .notes { margin:0; padding-left:20px; }
-    .two { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .two { display:grid; grid-template-columns:1fr; gap:14px; }
     @media (max-width: 860px) { .grid,.two { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -117,21 +121,28 @@ HOME_HTML = """<!doctype html>
     </div>
   </section>
 
-  <section id="result" class="result card">
-    <h2>生成结果</h2>
-    <div class="two">
-      <div>
-        <h3>匹配说明</h3>
-        <p id="summary"></p>
-        <pre id="json" style="white-space:pre-wrap;background:#f9fafb;border:1px solid var(--line);border-radius:10px;padding:12px;max-height:360px;overflow:auto;"></pre>
-      </div>
-      <div>
-        <h3>source_notes / 来源说明</h3>
-        <ul id="notes" class="notes"></ul>
+  <section class="preview-shell">
+    <div id="result" class="result card">
+      <h2>生成结果</h2>
+      <div class="two">
+        <div>
+          <h3>匹配说明</h3>
+          <p id="summary"></p>
+          <pre id="json" style="white-space:pre-wrap;background:#f9fafb;border:1px solid var(--line);border-radius:10px;padding:12px;max-height:360px;overflow:auto;"></pre>
+        </div>
+        <div>
+          <h3>source_notes / 来源说明</h3>
+          <ul id="notes" class="notes"></ul>
+        </div>
       </div>
     </div>
-    <h3>简历预览</h3>
-    <div id="preview" class="resume-preview"></div>
+    <div class="card">
+      <h2>简历预览</h2>
+      <p class="muted">这里始终保留 A4 预览区。生成前显示占位说明，生成后显示真实简历 HTML，下载 PDF 与此预览使用同一份 Resume JSON。</p>
+      <div class="preview-panel">
+        <div id="preview" class="resume-preview"><div class="placeholder">等待生成简历预览<br>粘贴 JD 和个人材料后点击“生成适配简历”</div></div>
+      </div>
+    </div>
   </section>
 </main>
 <script>
@@ -250,15 +261,27 @@ def _extract_contact(material_text: str) -> Dict[str, Any]:
 
 def _find_lines(material_text: str, words: List[str], limit: int) -> List[str]:
     lines = []
+    seen = set()
     for raw in material_text.splitlines():
         line = raw.strip(" -\t")
         if not line:
             continue
-        if any(w.lower() in line.lower() for w in words):
+        if any(w.lower() in line.lower() for w in words) and line not in seen:
             lines.append(line)
+            seen.add(line)
         if len(lines) >= limit:
             break
     return lines
+
+
+def _dedupe_lines(lines: List[str]) -> List[str]:
+    result = []
+    seen = set()
+    for line in lines:
+        if line and line not in seen:
+            result.append(line)
+            seen.add(line)
+    return result
 
 
 def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -272,7 +295,10 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[st
 
     education_lines = _find_lines(material_text, ["大学", "本科", "硕士", "专业", "毕业"], 2)
     experience_lines = _find_lines(material_text, ["经历", "实习", "公司", "银行", "投资", "岗位"], 4)
-    project_lines = _find_lines(material_text, ["项目", "调研", "报告", "Agent", "AIGC", "插件", "App"], 5)
+    project_lines = [
+        line for line in _find_lines(material_text, ["项目", "调研", "报告", "Agent", "AIGC", "插件", "App"], 8)
+        if line not in experience_lines
+    ][:5]
     skill_lines = _find_lines(material_text, ["技能", "Python", "Stata", "SPSS", "Excel", "Prompt"], 3)
 
     filename = materials[0]["filename"] if materials else "粘贴材料"
@@ -280,7 +306,7 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[st
         {"claim": f"姓名：{contact['name']}", "source": f"上传材料：{filename}", "confidence": "high"},
         {"claim": jd_info["jd_summary"], "source": "用户粘贴 JD", "confidence": "high"},
     ]
-    for line in (education_lines + experience_lines + project_lines + skill_lines)[:8]:
+    for line in _dedupe_lines(education_lines + experience_lines + project_lines + skill_lines)[:8]:
         source_notes.append({"claim": line[:120], "source": f"上传材料：{filename}", "confidence": "medium"})
 
     return {
@@ -337,6 +363,53 @@ def _render_resume_html(resume_json: Dict[str, Any]) -> str:
 
 
 def _write_pdf(resume_id: str, resume_json: Dict[str, Any]) -> Path:
+    """Render PDF from HTML with Chrome so Chinese text is not garbled."""
+    pdf_path = RUNTIME_DIR / f"{resume_id}.pdf"
+    html_path = RUNTIME_DIR / f"{resume_id}.html"
+    html_path.write_text(_render_pdf_document(resume_json), encoding="utf-8")
+
+    chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if chrome.exists():
+        subprocess.run(
+            [
+                str(chrome),
+                "--headless",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={pdf_path}",
+                html_path.resolve().as_uri(),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return pdf_path
+
+    return _write_pdf_with_pymupdf_fallback(resume_id, resume_json)
+
+
+def _render_pdf_document(resume_json: Dict[str, Any]) -> str:
+    preview = _render_resume_html(resume_json)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page {{ size: A4; margin: 14mm; }}
+    body {{ margin:0; background:#fff; }}
+    .resume-doc {{ font-size:12px; }}
+    .resume-doc h2 {{ font-size:22px !important; }}
+    .resume-doc h3 {{ break-after:avoid; }}
+    .resume-doc li {{ break-inside:avoid; }}
+  </style>
+</head>
+<body>{preview}</body>
+</html>"""
+
+
+def _write_pdf_with_pymupdf_fallback(resume_id: str, resume_json: Dict[str, Any]) -> Path:
+    """Last-resort fallback. On macOS this may not render CJK correctly; Chrome path is preferred."""
     pdf_path = RUNTIME_DIR / f"{resume_id}.pdf"
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
