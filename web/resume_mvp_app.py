@@ -6,6 +6,7 @@
 第一版使用可解释的本地启发式规则，不调用 LLM；所有事实通过 source_notes 标注来源。
 """
 
+import base64
 import html
 import re
 import subprocess
@@ -31,6 +32,10 @@ app = FastAPI(
 
 MATERIAL_STORE: Dict[str, Dict[str, str]] = {}
 RESUME_STORE: Dict[str, Dict[str, Any]] = {}
+SUPPORTED_TEXT_SUFFIXES = {".txt", ".md", ".markdown"}
+SUPPORTED_PDF_SUFFIXES = {".pdf"}
+SUPPORTED_IMPORT_SUFFIXES = SUPPORTED_TEXT_SUFFIXES | SUPPORTED_PDF_SUFFIXES
+MAX_IMPORT_FILES = 20
 
 
 class JDRequest(BaseModel):
@@ -39,8 +44,14 @@ class JDRequest(BaseModel):
 
 class MaterialUploadRequest(BaseModel):
     filename: str = Field(default="粘贴材料.txt")
-    content: str = Field(..., min_length=1)
+    content: Optional[str] = None
+    content_base64: Optional[str] = None
     content_type: str = Field(default="text/plain")
+
+
+class LocalFolderImportRequest(BaseModel):
+    folder_path: str = Field(..., min_length=1)
+    max_files: int = Field(default=MAX_IMPORT_FILES, ge=1, le=50)
 
 
 class GenerateResumeRequest(BaseModel):
@@ -76,7 +87,8 @@ HOME_HTML = """<!doctype html>
     .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px; }
     label { display:block; font-weight:700; margin-bottom:8px; }
     textarea { width:100%; min-height:260px; resize:vertical; border:1px solid var(--line); border-radius:10px; padding:12px; font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    input[type=file] { width:100%; padding:10px; border:1px dashed var(--line); border-radius:10px; background:#fafafa; }
+    input[type=file], input[type=text] { width:100%; padding:10px; border:1px dashed var(--line); border-radius:10px; background:#fafafa; }
+    input[type=text] { border-style:solid; margin-top:8px; }
     button { border:0; background:var(--blue); color:#fff; border-radius:10px; padding:11px 16px; font-weight:700; cursor:pointer; }
     button.secondary { background:#374151; }
     button:disabled { opacity:.55; cursor:not-allowed; }
@@ -96,7 +108,7 @@ HOME_HTML = """<!doctype html>
 <body>
 <header>
   <h1>JD 驱动的可信简历生成 MVP</h1>
-  <p class="muted">本地可访问版本：粘贴岗位 JD、上传 txt/Markdown 材料，生成 Resume JSON、来源说明、简历预览和可下载 PDF。当前版本使用本地启发式规则，不虚构无来源事实。</p>
+  <p class="muted">本地可访问版本：粘贴岗位 JD、上传原 PDF 简历 / txt / Markdown，或读取本机材料文件夹，生成 Resume JSON、来源说明、简历预览和可下载 PDF。当前版本使用本地启发式规则，不虚构无来源事实。</p>
 </header>
 <main>
   <section class="grid">
@@ -105,9 +117,12 @@ HOME_HTML = """<!doctype html>
       <textarea id="jd">AI产品实习生：负责AI Agent产品调研、用户需求分析、竞品分析、原型协作、项目推进，要求能输出结构化报告。</textarea>
     </div>
     <div class="card">
-      <label for="materialText">2. 上传或粘贴个人材料</label>
-      <input id="file" type="file" accept=".txt,.md,.markdown" />
-      <p class="muted">当前优先支持 txt / Markdown。文件会在浏览器本地读取成文本后提交给后端 JSON 接口，不依赖 multipart。</p>
+      <label for="materialText">2. 上传原简历 / 粘贴个人材料</label>
+      <input id="file" type="file" accept=".pdf,.txt,.md,.markdown,application/pdf,text/plain,text/markdown" multiple />
+      <p class="muted">支持上传已有 PDF 简历、txt、Markdown。PDF 会在后端用 PyMuPDF 提取文本并做基础诊断；提取不到文本的扫描版 PDF 会提示后续需要 OCR。</p>
+      <input id="folderPath" type="text" placeholder="可选：输入本机材料文件夹路径，例如 /Users/mahaoxuan/Desktop/春招" />
+      <div class="actions"><button id="importFolder" class="secondary" type="button">读取本机材料文件夹</button></div>
+      <p class="muted">本机目录读取只在这个本地 Demo 中可用，用来快速把已有简历、作品集、求职材料作为事实库导入。</p>
       <textarea id="materialText">马浩宣｜华侨大学经济学本科｜yishuziyu@foxmail.com｜13310838384
 经历：深圳海坤投资管理有限公司，参与AI Agent投资机会研究与行业研究报告。
 项目：AIGC技术接受度调研，负责问卷设计、访谈整理、数据分析与报告撰写。
@@ -148,37 +163,101 @@ HOME_HTML = """<!doctype html>
 <script>
 const fileInput = document.getElementById('file');
 const materialText = document.getElementById('materialText');
+const folderPath = document.getElementById('folderPath');
+const importFolderBtn = document.getElementById('importFolder');
 const jd = document.getElementById('jd');
 const statusEl = document.getElementById('status');
 const generateBtn = document.getElementById('generate');
 const downloadBtn = document.getElementById('download');
 const result = document.getElementById('result');
 let currentResumeId = null;
+let uploadedMaterialIds = [];
+
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function uploadFile(file) {
+  const isPdf = /[.]pdf$/i.test(file.name) || file.type === 'application/pdf';
+  const payload = {filename: file.name, content_type: file.type || (isPdf ? 'application/pdf' : 'text/plain')};
+  if (isPdf) {
+    payload.content_base64 = arrayBufferToBase64(await file.arrayBuffer());
+  } else if (/[.](txt|md|markdown)$/i.test(file.name)) {
+    payload.content = await file.text();
+  } else {
+    throw new Error(`暂不支持的文件类型：${file.name}`);
+  }
+  const resp = await fetch('/api/upload-materials', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.detail || JSON.stringify(data));
+  return data;
+}
 
 fileInput.addEventListener('change', async () => {
-  const file = fileInput.files[0];
-  if (!file) return;
-  if (!/[.](txt|md|markdown)$/i.test(file.name)) {
-    statusEl.textContent = '当前 MVP 仅支持 txt / md / markdown。';
-    return;
+  const files = Array.from(fileInput.files || []);
+  if (!files.length) return;
+  try {
+    statusEl.textContent = `正在读取 ${files.length} 个文件...`;
+    uploadedMaterialIds = [];
+    const summaries = [];
+    for (const file of files) {
+      const data = await uploadFile(file);
+      uploadedMaterialIds.push(data.material_id);
+      summaries.push(`${data.filename}（${data.chars}字${data.diagnostics ? '，' + data.diagnostics.summary : ''}）`);
+    }
+    statusEl.textContent = `已导入：${summaries.join('；')}`;
+    if (files.length === 1 && /[.](txt|md|markdown)$/i.test(files[0].name)) {
+      materialText.value = await files[0].text();
+    }
+  } catch (err) {
+    statusEl.textContent = '文件导入失败：' + err;
   }
-  materialText.value = await file.text();
-  statusEl.textContent = `已读取文件：${file.name}`;
+});
+
+importFolderBtn.addEventListener('click', async () => {
+  try {
+    const path = folderPath.value.trim();
+    if (!path) { statusEl.textContent = '请先输入本机材料文件夹路径。'; return; }
+    importFolderBtn.disabled = true;
+    statusEl.textContent = '正在读取本机材料文件夹...';
+    const resp = await fetch('/api/import-local-folder', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({folder_path:path, max_files:20})
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || JSON.stringify(data));
+    uploadedMaterialIds = uploadedMaterialIds.concat(data.material_ids);
+    statusEl.textContent = `已从文件夹导入 ${data.imported_count} 份材料：${data.imported_files.join('；')}`;
+  } catch (err) {
+    statusEl.textContent = '读取文件夹失败：' + err;
+  } finally {
+    importFolderBtn.disabled = false;
+  }
 });
 
 generateBtn.addEventListener('click', async () => {
   try {
     generateBtn.disabled = true;
-    statusEl.textContent = '正在上传材料...';
-    const filename = fileInput.files[0]?.name || '粘贴材料.md';
-    const upload = await fetch('/api/upload-materials', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({filename, content: materialText.value, content_type:'text/markdown'})
-    }).then(r => r.json());
-    statusEl.textContent = '正在分析 JD 并生成 Resume JSON...';
+    statusEl.textContent = '正在整理材料并生成 Resume JSON...';
+    let materialIds = [...uploadedMaterialIds];
+    const pasted = materialText.value.trim();
+    if (pasted) {
+      const upload = await fetch('/api/upload-materials', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({filename:'粘贴材料.md', content:pasted, content_type:'text/markdown'})
+      }).then(r => r.json());
+      materialIds.push(upload.material_id);
+    }
+    if (!materialIds.length) throw new Error('请先上传 PDF/txt/Markdown、读取本机文件夹，或粘贴个人材料。');
+    statusEl.textContent = `正在分析 JD，并基于 ${materialIds.length} 份材料生成 Resume JSON...`;
     const gen = await fetch('/api/generate-resume', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({jd_text: jd.value, material_ids:[upload.material_id]})
+      body: JSON.stringify({jd_text: jd.value, material_ids:materialIds})
     }).then(r => r.json());
     currentResumeId = gen.resume_id;
     const preview = await fetch(`/api/preview?resume_id=${encodeURIComponent(currentResumeId)}`).then(r => r.text());
@@ -214,6 +293,79 @@ downloadBtn.addEventListener('click', () => {
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _normalize_extracted_text(value: str) -> str:
+    lines = []
+    for line in (value or "").splitlines():
+        cleaned = _clean_text(line)
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
+
+
+def _extract_pdf_text_and_diagnostics(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"PDF 无法打开：{filename}｜{exc}") from exc
+
+    page_texts: List[str] = []
+    image_count = 0
+    for page in doc:
+        page_texts.append(page.get_text("text") or "")
+        image_count += len(page.get_images(full=True))
+    text = _normalize_extracted_text("\n".join(page_texts))
+    diagnostics = {
+        "pages": len(doc),
+        "images": image_count,
+        "extractable_chars": len(text),
+        "summary": f"PDF {len(doc)}页，可提取{text and len(text) or 0}字，图片{image_count}张",
+        "needs_ocr": len(text) < 30,
+    }
+    doc.close()
+    if diagnostics["needs_ocr"]:
+        text = text or "[PDF文本层过少：可能是扫描版或图片型PDF，后续需要OCR后才能作为强证据。]"
+    return {"content": text, "diagnostics": diagnostics}
+
+
+def _material_from_upload(filename: str, content_type: str, content: Optional[str], content_base64: Optional[str]) -> Dict[str, Any]:
+    suffix = Path(filename).suffix.lower()
+    if content_base64 or suffix == ".pdf" or content_type == "application/pdf":
+        if not content_base64:
+            raise HTTPException(status_code=400, detail="PDF 上传需要 content_base64")
+        try:
+            pdf_bytes = base64.b64decode(content_base64, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"base64 解码失败：{exc}") from exc
+        extracted = _extract_pdf_text_and_diagnostics(pdf_bytes, filename)
+        return {
+            "filename": filename,
+            "content": extracted["content"],
+            "content_type": "application/pdf",
+            "diagnostics": extracted["diagnostics"],
+        }
+
+    text = (content or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="上传材料内容为空")
+    return {
+        "filename": filename,
+        "content": text,
+        "content_type": content_type or "text/plain",
+        "diagnostics": {"summary": f"文本{len(text)}字"},
+    }
+
+
+def _read_supported_file(path: Path) -> Dict[str, Any]:
+    suffix = path.suffix.lower()
+    if suffix in SUPPORTED_TEXT_SUFFIXES:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        return _material_from_upload(path.name, "text/plain", text, None)
+    if suffix in SUPPORTED_PDF_SUFFIXES:
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        return _material_from_upload(path.name, "application/pdf", None, encoded)
+    raise HTTPException(status_code=400, detail=f"暂不支持的文件类型：{path.name}")
 
 
 def _keyword_hits(text: str) -> List[str]:
@@ -301,13 +453,18 @@ def _build_resume_json(jd_text: str, materials: List[Dict[str, str]]) -> Dict[st
     ][:5]
     skill_lines = _find_lines(material_text, ["技能", "Python", "Stata", "SPSS", "Excel", "Prompt"], 3)
 
-    filename = materials[0]["filename"] if materials else "粘贴材料"
+    source_names = "、".join(m["filename"] for m in materials[:3]) + ("等" if len(materials) > 3 else "")
     source_notes = [
-        {"claim": f"姓名：{contact['name']}", "source": f"上传材料：{filename}", "confidence": "high"},
+        {"claim": f"姓名：{contact['name']}", "source": f"上传/导入材料：{source_names}", "confidence": "high"},
         {"claim": jd_info["jd_summary"], "source": "用户粘贴 JD", "confidence": "high"},
     ]
+    for material in materials:
+        diagnostics = material.get("diagnostics") or {}
+        if diagnostics.get("summary"):
+            confidence = "low" if diagnostics.get("needs_ocr") else "medium"
+            source_notes.append({"claim": f"{material['filename']}：{diagnostics['summary']}", "source": f"材料诊断：{material['filename']}", "confidence": confidence})
     for line in _dedupe_lines(education_lines + experience_lines + project_lines + skill_lines)[:8]:
-        source_notes.append({"claim": line[:120], "source": f"上传材料：{filename}", "confidence": "medium"})
+        source_notes.append({"claim": line[:120], "source": f"上传/导入材料：{source_names}", "confidence": "medium"})
 
     return {
         "target_role": jd_info["target_role"],
@@ -468,13 +625,55 @@ def analyze_jd(req: JDRequest) -> Dict[str, Any]:
 
 @app.post("/api/upload-materials")
 def upload_materials(req: MaterialUploadRequest) -> Dict[str, Any]:
+    material = _material_from_upload(req.filename, req.content_type, req.content, req.content_base64)
     material_id = uuid.uuid4().hex
-    MATERIAL_STORE[material_id] = {
-        "filename": req.filename,
-        "content": req.content,
-        "content_type": req.content_type,
+    MATERIAL_STORE[material_id] = material
+    return {
+        "status": "ok",
+        "material_id": material_id,
+        "filename": material["filename"],
+        "chars": len(material["content"]),
+        "diagnostics": material.get("diagnostics", {}),
     }
-    return {"status": "ok", "material_id": material_id, "filename": req.filename, "chars": len(req.content)}
+
+
+@app.post("/api/import-local-folder")
+def import_local_folder(req: LocalFolderImportRequest) -> Dict[str, Any]:
+    folder = Path(req.folder_path).expanduser().resolve()
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"文件夹不存在：{folder}")
+
+    candidates = [p for p in sorted(folder.rglob("*")) if p.is_file() and p.suffix.lower() in SUPPORTED_IMPORT_SUFFIXES]
+    if not candidates:
+        raise HTTPException(status_code=400, detail="该文件夹中没有可导入的 txt / Markdown / PDF 文件")
+
+    imported_ids: List[str] = []
+    imported_files: List[str] = []
+    skipped_files: List[str] = []
+    for path in candidates[: req.max_files]:
+        try:
+            material = _read_supported_file(path)
+        except Exception as exc:
+            skipped_files.append(f"{path.name}: {exc}")
+            continue
+        material["filename"] = str(path)
+        material_id = uuid.uuid4().hex
+        MATERIAL_STORE[material_id] = material
+        imported_ids.append(material_id)
+        imported_files.append(path.name)
+
+    if not imported_ids:
+        raise HTTPException(status_code=400, detail="找到文件但均未能成功读取")
+
+    return {
+        "status": "ok",
+        "folder_path": str(folder),
+        "material_ids": imported_ids,
+        "imported_count": len(imported_ids),
+        "imported_files": imported_files,
+        "skipped_files": skipped_files,
+        "limited": len(candidates) > req.max_files,
+    }
 
 
 @app.post("/api/generate-resume")

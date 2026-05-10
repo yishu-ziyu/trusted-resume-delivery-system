@@ -1,10 +1,43 @@
+import base64
+import subprocess
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 import fitz
 
 from web.resume_mvp_app import app
 
 
-def test_resume_mvp_generates_resume_json_preview_and_pdf():
+def _make_pdf_bytes(tmp_path: Path, body: str) -> bytes:
+    html_path = tmp_path / "source.html"
+    pdf_path = tmp_path / "source.pdf"
+    html_path.write_text(f"<html><meta charset='utf-8'><body>{body}</body></html>", encoding="utf-8")
+    chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    if chrome.exists():
+        subprocess.run(
+            [
+                str(chrome),
+                "--headless",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={pdf_path}",
+                html_path.resolve().as_uri(),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return pdf_path.read_bytes()
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "mahaoxuan AI Agent resume")
+    doc.save(pdf_path)
+    doc.close()
+    return pdf_path.read_bytes()
+
+
+def test_resume_mvp_generates_resume_json_preview_and_pdf(tmp_path):
     client = TestClient(app)
 
     jd = """
@@ -22,6 +55,8 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf():
     assert home_resp.status_code == 200
     assert "简历预览" in home_resp.text
     assert "等待生成简历预览" in home_resp.text
+    assert "PDF 简历" in home_resp.text
+    assert "读取本机材料文件夹" in home_resp.text
 
     analyze_resp = client.post("/api/analyze-jd", json={"jd_text": jd})
     assert analyze_resp.status_code == 200
@@ -36,9 +71,42 @@ def test_resume_mvp_generates_resume_json_preview_and_pdf():
     assert upload_data["material_id"]
     assert upload_data["filename"] == "个人材料.md"
 
+    pdf_bytes = _make_pdf_bytes(
+        tmp_path,
+        "马浩宣 华侨大学本科 yishuziyu@foxmail.com AI Agent 产品调研 项目推进",
+    )
+    pdf_upload_resp = client.post(
+        "/api/upload-materials",
+        json={
+            "filename": "原始PDF简历.pdf",
+            "content_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+            "content_type": "application/pdf",
+        },
+    )
+    assert pdf_upload_resp.status_code == 200
+    pdf_upload_data = pdf_upload_resp.json()
+    assert pdf_upload_data["diagnostics"]["pages"] >= 1
+    assert pdf_upload_data["diagnostics"]["extractable_chars"] > 0
+
+    local_dir = tmp_path / "材料库"
+    local_dir.mkdir()
+    (local_dir / "作品集.md").write_text("项目：本机文件夹导入材料，AI Agent 作品集。", encoding="utf-8")
+    (local_dir / "原简历.pdf").write_bytes(pdf_bytes)
+    folder_resp = client.post(
+        "/api/import-local-folder",
+        json={"folder_path": str(local_dir), "max_files": 5},
+    )
+    assert folder_resp.status_code == 200
+    folder_data = folder_resp.json()
+    assert folder_data["imported_count"] == 2
+    assert len(folder_data["material_ids"]) == 2
+
     generate_resp = client.post(
         "/api/generate-resume",
-        json={"jd_text": jd, "material_ids": [upload_data["material_id"]]},
+        json={
+            "jd_text": jd,
+            "material_ids": [upload_data["material_id"], pdf_upload_data["material_id"]] + folder_data["material_ids"],
+        },
     )
     assert generate_resp.status_code == 200
     data = generate_resp.json()
